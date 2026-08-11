@@ -1,105 +1,114 @@
 /**
- * voice-mcp
- * 
+ * voice‑mcp
+ *
  * An MCP server for AI voice synthesis with inline audio player.
- * Supports MiniMax TTS API with custom voice cloning.
- * 
- * GitHub: https://github.com/garan0613/voice-mcp
- * License: MIT
+ * Supports ElevenLabs TTS‑v3 API with custom cloned voice.
  */
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 
-// =============================================================================
-// Types
-// =============================================================================
-
 export interface Env {
-  // MiniMax API credentials
-  MINIMAX_API_KEY: string;
-  MINIMAX_GROUP_ID: string;
-  VOICE_ID: string;
-  // Optional: custom bot name for display
-  BOT_NAME?: string;
+	ELEVEN_API_KEY: string;
+	VOICE_ID: string;
+	MODEL_ID?: string;
+	BOT_NAME?: string;
 }
 
-interface T2AResponse {
-  data?: {
-    audio?: string;
-    status?: number;
-  };
-  extra_info?: {
-    audio_length?: number;
-    audio_sample_rate?: number;
-    audio_size?: number;
-  };
-  base_resp?: {
-    status_code: number;
-    status_msg: string;
-  };
-}
+// Audio Player HTML UI
+const AUDIO_PLAYER_HTML = `
+<div style="width:100%;max-width:420px;padding:14px;background:#18181b;border-radius:14px;font-family:-apple-system,system-ui">
+  <div style="display:flex;align-items:center;gap:12px">
+    <button onclick="let a=this.nextElementSibling;a.paused?a.play():a.pause()" style="width:42px;height:42px;border-radius:50%;border:none;background:#6366f1;color:white;font-size:18px;cursor:pointer">▶</button>
+    <audio controls style="flex:1;height:36px">
+  </div>
+  <div id="transcript" style="margin-top:10px;font-size:13px;color:#a1a1aa;white-space:pre-wrap"></div>
+</div>
+`;
 
-// =============================================================================
-// Constants
-// =============================================================================
+export default {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+		const server = new McpServer({
+			name: env.BOT_NAME ?? "Voice‑Speaker",
+			version: "1.0.0",
+		});
 
-const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
-const VOICE_RESOURCE_URI = "ui://voice-mcp/player.html";
+		server.tool(
+			"speak",
+			"生成语音朗读给定文本，返回可播放音频组件",
+			{
+				text: z.string().describe("需要转语音的文字内容"),
+			},
+			async ({ text }) => {
+				const ttsRes = await fetch(
+					`https://api.elevenlabs.io/v1/text-to-speech/${env.VOICE_ID}`,
+					{
+						method: "POST",
+						headers: {
+							"xi-api-key": env.ELEVEN_API_KEY,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({
+							text: text,
+							model_id: env.MODEL_ID ?? "eleven_v3",
+							voice_settings: {
+								stability: 0.72,
+								similarity_boost: 0.78
+							}
+						}),
+					}
+				);
 
-// =============================================================================
-// Audio Player HTML (WeChat-style UI)
-// =============================================================================
+				if (!ttsRes.ok) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `语音接口调用失败：${ttsRes.status}`,
+							},
+						],
+					};
+				}
 
-function getPlayerHTML(botName: string): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Voice Player</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: transparent;
-      padding: 8px;
-    }
-    .container {
-      background: #fff;
-      border-radius: 16px;
-      padding: 14px 16px;
-      max-width: 100%;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-    }
-    .player {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 4px 0;
-    }
-    .play-btn {
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      border: none;
-      background: #f5f5f5;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: background 0.2s;
-    }
-    .play-btn:hover { background: #eee; }
-    .play-btn:active { background: #e0e0e0; }
-    .play-btn svg { width: 14px; height: 14px; fill: #333; }
-    .play-btn.playing svg { fill: #07c160; }
-    .waveform {
-      flex: 1;
-      display: flex;
-      align-items: center;
+				const audioBuf = await ttsRes.arrayBuffer();
+				const base64 = btoa(
+					String.fromCharCode(...new Uint8Array(audioBuf))
+				);
+				const dataUrl = `data:audio/mpeg;base64,${base64}`;
+
+				let ui = AUDIO_PLAYER_HTML;
+				ui = ui.replace(
+					"<audio controls style",
+					`<audio controls src="${dataUrl}" style`
+				);
+				ui = ui.replace(
+					'id="transcript"',
+					`id="transcript">${text}`
+				);
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `语音已生成\n原文：${text}`,
+						},
+						{
+							type: "resource",
+							resource: {
+								uri: `data:text/html,${encodeURIComponent(ui)}`,
+								mimeType: "text/html",
+								text: ui,
+							},
+						},
+					],
+				};
+			}
+		);
+
+		const handler = createMcpHandler(server);
+		return handler(request, env, ctx);
+	},
+};
       gap: 2px;
       height: 24px;
     }
